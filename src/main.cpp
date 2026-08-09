@@ -394,7 +394,7 @@ void setup()
 #endif
 
   EEPROM.begin(10);
-  readEEPROM();//Restore previous state
+  restoreEEPROM();//Restore previous state
 #ifdef WT32_ETH01
   mqttSerial.print("Setting up ethernet...");
   setupEthernet();
