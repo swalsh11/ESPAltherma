@@ -40,17 +40,33 @@ Goal: heat domestic hot water preferentially when there's solar surplus, without
 - Fixed a stale `platformio.ini`: `default_envs` was pointing at `espoe32` (leftover from an earlier hardware iteration — PR #401 — before the user switched to WT32-ETH01, not a second live device), switched to `wt32-eth01`. OTA `upload_port` was a hardcoded IP (`192.168.0.21`) that had drifted via DHCP to the device's actual current address (`192.168.0.189`, confirmed live) — switched to the `ESPAltherma.local` mDNS hostname so this doesn't recur.
 - Surveyed 3 firmware snapshots on the NAS (`ESPAltherma-main` = live/current, `ESPAltherma-mainx` = Feb 2024 experiments, `ESPAltherma32` = Feb 2023 earliest experiments) — confirmed the two older ones are superseded, nothing uniquely valuable in them, all three were always on `DEFAULT.h`.
 
+### SG relay hardware selection
+Compared four options for driving the S10S/S11S dry contacts, given the goal of minimizing continuous power draw off the Daikin's own 5V (X10A) supply pin:
+- **Mechanical 2-relay module** (MakerShop YXK326) — works, but ~70-80mA per relay coil while energized; over hours-long "Recommended On" states that adds up.
+- **G3MB-202P SSR** (MakerShop YXA049) — **ruled out**. TRIAC-based with zero-cross switching, AC-only by design — cannot reliably switch the Daikin's ~16V DC signal (a TRIAC has no way to turn off without an AC zero-crossing, so it could latch on indefinitely on a DC load).
+- **IRF540 MOSFET module** (MakerShop YXK490) — risky. IRF540 has a higher gate threshold, generally wants closer to ~10V gate drive to fully saturate; not confirmed logic-level-friendly at WT32-ETH01's 3.3V GPIO output. Also single-channel (would need two, €12.30 total).
+- **XY-MOS dual-MOSFET module** (MakerShop YXA270) — considered for its near-zero holding current (direct MOSFET switch, no continuous LED/coil draw), but its DC+/DC-/OUT+/OUT- topology is built to gate power *you* supply to a load, not to close a floating dry contact that already has its own voltage source (the Daikin already supplies ~16V across the open contact internally). Using only OUT-/DC- as a switch pair might work but depends on internal gate-drive circuitry not needing the DC+ rail — unconfirmed without a schematic. Passed on this for topology-fit reasons, not power.
+- **F5305S opto-isolated MOSFET module (HW-548)** — **selected**. MakerShop SKU **YXK440**, also available as a 4-pack on Amazon (JZK, ASIN B09SWRF88D, same board — confirmed identical spec). Input/output fully isolated by design, which is the textbook-correct topology for switching an external circuit that already has its own power source. ~5mA input current (vs ~70-80mA for the mechanical relay), output rated 5-36V/5A (comfortably covers the Daikin's ~16V/10mA signal). Documented as digital-high-level triggered, matching the existing `SG_RELAY_HIGH_TRIGGER` setting — unlike the mechanical relay (which is active-low and would have needed a firmware flip), **no polarity change needed**, though still unconfirmed against the actual physical board. Need two (one per channel), ~€7.10 total from MakerShop or one 4-pack from Amazon.
+
+### DS18B20 outdoor temperature sensor
+- Added full firmware support, gated behind `PIN_DS18B20` (set to **GPIO4** — free on WT32-ETH01: not used by the Ethernet PHY, not a boot-strapping pin, and unlike GPIO35/36/39 not input-only, so it can drive 1-Wire's bidirectional reset/write pulses).
+- `mqtt.h`: added `OneWire`/`DallasTemperature` init (`setupOutdoorTempSensor()`) and a read function (`readOutdoorTemp()`) that populates a global `outdoorTempC`, appended into the existing MQTT JSON payload alongside `WifiRSSI`/`FreeMem`.
+- `main.cpp`: sensor init added to `setup()`; read call added to `loop()` right before `sendValues()` — happens once per `FREQUENCY` cycle (~30s default), after the P1P2 register queries for that cycle are already done, so the ~750ms blocking conversion time doesn't touch the P1P2 comms critical path.
+- `platformio.ini`: added `paulstoffregen/OneWire` and `milesburton/DallasTemperature` to the `wt32-eth01` env's `lib_deps`.
+- **Considered GY-21 (SHT21 I2C temp+humidity) instead — decided against it, staying with the DS18B20 already on hand.** Deciding factor wasn't cost but protocol fit: 1-Wire is specifically suited to long cable runs (DS18B20 is commonly sold in waterproof probes for exactly this kind of remote-sensor use), while I2C is a short-range bus that gets unreliable over any real distance without extra precautions most hobby setups skip. Since the outdoor probe needs a cable run away from the heat pump's own heat exchanger, DS18B20 is the better protocol fit regardless of what's already owned. If humidity data is wanted later, that's a case for *adding* a GY-21 as a second sensor mounted close to the ESP32 (where I2C's range limit doesn't matter), not replacing the outdoor probe.
+
 ### Git / repo state
 - Live firmware source lives at `/volume1/Sean/e15 backup/ESPAltherma-main/` on the NAS (not itself a git repo — plain files). `.gitignore` there excludes `src/setup.h` (correctly keeps WiFi/MQTT credentials out of version control).
 - Cloned the existing bare remote (`ssh://Admin_sean@192.168.0.112/volume1/git-repos/esp-altherma.git`) to this machine at `~/projects/esp-altherma`, synced in the live firmware content, committed the #457 merge + platformio.ini fixes (commit `63050f2`), pushed to `origin` (NAS, fast-forward).
 - `github.com/swalsh11/ESPAltherma` has its own real, unrelated commit history (a fork of upstream `raomin/ESPAltherma` at commit `ebc7757`) — pushing the local single-commit snapshot to `main` there would have required a force-push and destroyed that history, so instead pushed as a new branch: **`wt32-eth01-sg-relay`**. `main` on GitHub is untouched. PR link: https://github.com/swalsh11/ESPAltherma/pull/new/wt32-eth01-sg-relay
 
 ### Outstanding / next steps
-1. Wire two relays: GPIO32 → relay → S10S (X5M.9/10), GPIO33 → relay → S11S (X5M.5/6) on the Daikin outdoor unit.
-2. Build the `wt32-eth01` PlatformIO environment and flash (OTA now works via `ESPAltherma.local`, no need to remove the board).
-3. On the Daikin installer menu: set `[9.8.4]`=3, `[9.8.7]`=No.
-4. Build the HA automation: watch PV surplus (PV1+PV2 power − house consumption) with hysteresis, publish to `espaltherma/sg/set` (2 = Recommended On, 0 = Free running).
-5. Decide on relay module (in progress — evaluating a MakerShop.ie 2-relay module for trigger-voltage/polarity compatibility with `SG_RELAY_HIGH_TRIGGER`).
-6. Fix or remove the dead `Room Setpoint` template reference.
-7. Solarman: disable the open WiFi AP and change default logger web credentials via the SolarmanPV app.
-8. Zappi EV charger integration — still not started.
+1. Order two F5305S opto-isolated MOSFET modules (MakerShop YXK440 ×2, or the JZK 4-pack on Amazon) and a DS18B20 probe (already on hand).
+2. Wire: GPIO32 → module 1 → S10S (X5M.9/10), GPIO33 → module 2 → S11S (X5M.5/6) on the Daikin outdoor unit; GPIO4 → DS18B20 data line with a 4.7kΩ pull-up to 3.3V, sensor mounted outdoors away from the heat pump's own heat exchanger.
+3. **Verify trigger polarity on the actual F5305S boards before relying on `SG_RELAY_HIGH_TRIGGER`** — current setting is a best guess from the product listing, not confirmed against hardware.
+4. Build the `wt32-eth01` PlatformIO environment and flash (OTA works via `ESPAltherma.local`, no need to remove the board — confirmed the device is live and reachable there).
+5. On the Daikin installer menu: set `[9.8.4]`=3, `[9.8.7]`=No.
+6. Build the HA automation: watch PV surplus (PV1+PV2 power − house consumption) with hysteresis, publish to `espaltherma/sg/set` (2 = Recommended On, 0 = Free running).
+7. Fix or remove the dead `Room Setpoint` template reference.
+8. Solarman: disable the open WiFi AP and change default logger web credentials via the SolarmanPV app.
+9. Zappi EV charger integration — still not started.
