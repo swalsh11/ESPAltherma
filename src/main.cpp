@@ -388,6 +388,10 @@ void setup()
   pinMode(PIN_SG2, OUTPUT);
 
 #endif
+
+#ifdef PIN_DS18B20
+  setupOutdoorTempSensor();
+#endif
 #ifdef ARDUINO_M5Stick_C_Plus
   gpio_pulldown_dis(GPIO_NUM_25);
   gpio_pullup_dis(GPIO_NUM_25);
@@ -463,6 +467,9 @@ void loop()
       //waitLoop(500);//wait .5sec between registries
     }
   }
+#ifdef PIN_DS18B20
+  readOutdoorTemp();
+#endif
   sendValues();//Send the full json message
   mqttSerial.printf("Done. Waiting %ld ms...", FREQUENCY - millis() + start);
   waitLoop(FREQUENCY - millis() + start);

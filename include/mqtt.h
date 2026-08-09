@@ -2,6 +2,25 @@
 #include <EEPROM.h>
 #include "restart.h"
 
+#ifdef PIN_DS18B20
+#include <OneWire.h>
+#include <DallasTemperature.h>
+OneWire oneWire(PIN_DS18B20);
+DallasTemperature outdoorTempSensor(&oneWire);
+float outdoorTempC = -127.0; // DallasTemperature's sentinel value for "not read yet / disconnected"
+
+void setupOutdoorTempSensor()
+{
+  outdoorTempSensor.begin();
+}
+
+void readOutdoorTemp()
+{
+  outdoorTempSensor.requestTemperatures(); // blocks ~750ms at default 12-bit resolution; only called once per FREQUENCY cycle, after the P1P2 queries are already done
+  outdoorTempC = outdoorTempSensor.getTempCByIndex(0);
+}
+#endif
+
 #define MQTT_attr "espaltherma/ATTR"
 #define MQTT_lwt "espaltherma/LWT"
 
@@ -32,6 +51,9 @@ void sendValues()
 #endif
   snprintf(jsonbuff + strlen(jsonbuff),MAX_MSG_SIZE - strlen(jsonbuff) , "\"%s\":\"%ddBm\",", "WifiRSSI", WiFi.RSSI());
   snprintf(jsonbuff + strlen(jsonbuff),MAX_MSG_SIZE - strlen(jsonbuff) , "\"%s\":\"%d\",", "FreeMem", ESP.getFreeHeap());
+#ifdef PIN_DS18B20
+  snprintf(jsonbuff + strlen(jsonbuff),MAX_MSG_SIZE - strlen(jsonbuff) , "\"%s\":%.2f,", "Outdoor Temp (DS18B20)", outdoorTempC);
+#endif
   jsonbuff[strlen(jsonbuff) - 1] = '}';
 #ifdef JSONTABLE
   strcat(jsonbuff,"]");
